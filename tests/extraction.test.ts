@@ -86,6 +86,9 @@ describe("conservative adaptive extraction", () => {
       customTools: [],
     });
     expect(runHeadlessAgentMock).toHaveBeenCalledOnce();
-    expect(runHeadlessAgentMock).toHaveBeenCalledWith(expect.objectContaining({ tools: ["read", "ls"], maxTurns: 8 }));
+    expect(runHeadlessAgentMock).toHaveBeenCalledWith(expect.objectContaining({
+      tools: ["read", "ls", "memory_search", "memory_add"],
+      maxTurns: 8,
+    }));
   });
 });

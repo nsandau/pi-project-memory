@@ -101,7 +101,9 @@ export async function runDream(options: RunDreamOpts): Promise<string> {
     parentModel: options.parentModel,
     thinkLevel: options.thinkLevel,
     timeoutMs: 600_000,
-    tools: ["read", "ls"],
+    // Include custom mutation tools in the allowlist; passing customTools alone
+    // does not make them active in a headless session.
+    tools: ["read", "ls", "memory_file_write", "memory_file_rename", "memory_file_delete"],
     customTools: dreamTools(options.memoryDir, options.maxLines, options.maxBytes),
     sessionPersistence: options.sessionPersistence,
   });

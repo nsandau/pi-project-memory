@@ -72,7 +72,10 @@ export async function runExtract(options: RunExtractOpts): Promise<void> {
     thinkLevel: options.thinkLevel,
     maxTurns: 8,
     timeoutMs: 120_000,
-    tools: ["read", "ls"],
+    // Custom tools must be included in the allowlist as well as passed to
+    // createAgentSession; otherwise the headless agent can inspect memory but
+    // cannot call memory_add or memory_search.
+    tools: ["read", "ls", "memory_search", "memory_add"],
     customTools: options.customTools ?? [],
     sessionPersistence: options.sessionPersistence,
   });
