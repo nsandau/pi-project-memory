@@ -60,6 +60,7 @@ If a search misses, retry with synonyms, alternate identifiers, or an explicit r
 
 - `/memory` — status
 - `/memory on|off` — runtime toggle
+- `/memory retry` — re-review the current session (useful after an interrupted/failed review)
 - `/dream` — precision-oriented consolidation
 
 ## Configuration

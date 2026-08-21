@@ -109,19 +109,24 @@ export default function memoryExtension(pi: ExtensionAPI) {
       return;
     }
 
-    // Claim this exact conversation slice synchronously before any await so
-    // concurrent lifecycle events cannot submit the same slice twice.
-    reviewState.reviewedThrough = checkpoint;
-    reviewState.responses = 0;
-    reviewState.toolCalls = 0;
-    reviewStore.reviewedEntries.push(...entryIds);
-    reviewStore.reviewedEntries = [...new Set(reviewStore.reviewedEntries)].slice(-5_000);
+    // Only one review may run at a time. Commit the checkpoint after the
+    // headless agent succeeds; a failed review must remain retryable.
+    const previousState = { ...reviewState };
+    const previousReviewedEntries = [...reviewStore.reviewedEntries];
     const options = extractionOptions(ctx, messages);
     extractionInFlight = (async () => {
-      await queuePersist();
       await runExtract(options);
+      reviewState.reviewedThrough = checkpoint;
+      reviewState.responses = 0;
+      reviewState.toolCalls = 0;
+      reviewStore.reviewedEntries.push(...entryIds);
+      reviewStore.reviewedEntries = [...new Set(reviewStore.reviewedEntries)].slice(-5_000);
+      await queuePersist();
     })()
-      .catch(() => {})
+      .catch(() => {
+        reviewState = previousState;
+        reviewStore.reviewedEntries = previousReviewedEntries;
+      })
       .finally(async () => {
         extractionInFlight = null;
         if (!shuttingDown && pendingTrigger) {
@@ -237,6 +242,15 @@ export default function memoryExtension(pi: ExtensionAPI) {
       if (args === "off" || args === "on") {
         config = { ...config, enabled: args === "on" };
         ctx.ui.notify(`Memory ${args}`, "info");
+        return;
+      }
+      if (args === "retry") {
+        // Recover sessions reviewed by an older build whose memory tools were
+        // inactive. Re-examine the current branch from its beginning.
+        reviewState = { ...emptySessionReviewState(), responses: 1 };
+        reviewStore.reviewedEntries = [];
+        await triggerExtraction("compaction", ctx);
+        ctx.ui.notify("Memory review retried for the current session.", "info");
         return;
       }
       const files = (await readdir(memoryDir).catch(() => [])).filter((file) => file.endsWith(".md"));
