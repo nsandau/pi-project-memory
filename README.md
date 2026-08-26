@@ -14,7 +14,8 @@ A project-scoped durable-memory extension for [Pi]. It adapts the filesystem arc
 ```
 
 - Git repositories are identified by Git root; other directories use absolute cwd.
-- Every project gets a separate hashed namespace.
+- Every project gets a separate hashed namespace under `~/.pi/memory` by default.
+- `PI_MEMORY_DIR` can override that base directory for project-local launcher setups.
 - Session startup injects only `MEMORY.md` (up to 50 topic lines / 8 KB).
 - Detailed recall is explicit through `memory(action="search")` and `rg --json`.
 - Search prefers Pi's managed binary at `<Pi agent dir>/bin/rg` (the same location Pi's built-in grep uses), then falls back to `rg` on `PATH`.
@@ -65,8 +66,11 @@ If a search misses, retry with synonyms, alternate identifiers, or an explicit r
 
 ## Configuration
 
-Optional global config: `~/.pi/agent/memory.json`  
-Optional trusted-project override: `.pi/memory.json`
+Configuration files:
+
+- Global: `~/.pi/agent/memory.json`
+- Trusted-project override: `.pi/memory.json`
+- `PI_MEMORY_DIR` overrides `memoryDir` (useful for a project-local launcher); the project hash is still appended.
 
 ```json
 {

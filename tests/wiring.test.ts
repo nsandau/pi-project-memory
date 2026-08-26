@@ -99,20 +99,21 @@ describe("extension cadence wiring", () => {
     expect(result.message).toBeUndefined();
   });
 
-  it("runs extraction at 10 assistant responses", async () => {
+  it("runs extraction at 10 assistant responses before the agent run settles", async () => {
     const runtime = await start("responses", branch);
     // New sessions reconstruct one existing assistant response; add nine more.
     for (let index = 0; index < 9; index++) await runtime.handlers.message_end[0]({ message: { role: "assistant" } }, runtime.ctx);
-    await runtime.handlers.agent_end[0]({}, runtime.ctx);
+    await runtime.handlers.turn_end[0]({}, runtime.ctx);
     await vi.waitFor(() => expect(runExtractMock).toHaveBeenCalledTimes(1));
   });
 
-  it("runs extraction at 30 tool calls", async () => {
+  it("runs extraction at 30 tool calls before the agent run settles", async () => {
     const runtime = await start("tools", []);
     for (let index = 0; index < 30; index++) await runtime.handlers.tool_execution_end[0]({}, runtime.ctx);
     // Add a branch entry before review is claimed.
     (runtime.ctx.sessionManager.getBranch as any) = () => branch;
-    await runtime.handlers.agent_end[0]({}, runtime.ctx);
+    await runtime.handlers.turn_end[0]({}, runtime.ctx);
+    // No agent_end is needed: a long-running workflow can continue after this.
     await vi.waitFor(() => expect(runExtractMock).toHaveBeenCalledTimes(1));
   });
 

@@ -105,6 +105,11 @@ export async function loadConfig(ctx: LoadConfigContext): Promise<MemoryConfig> 
   if (ctx.isProjectTrusted()) {
     config = deepMerge(config, readJsonSafe(join(ctx.cwd, configDirName, "memory.json")));
   }
+  // Preserve compatibility with the original pi-memory setup and let the
+  // launcher choose a project-local base directory. Environment configuration
+  // wins over file configuration so a shell wrapper cannot be accidentally
+  // ignored by this extension.
+  if (process.env.PI_MEMORY_DIR?.trim()) config.memoryDir = process.env.PI_MEMORY_DIR;
   config.memoryDir = expandTilde(config.memoryDir);
   return config;
 }

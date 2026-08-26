@@ -113,18 +113,31 @@ export default function memoryExtension(pi: ExtensionAPI) {
     // headless agent succeeds; a failed review must remain retryable.
     const previousState = { ...reviewState };
     const previousReviewedEntries = [...reviewStore.reviewedEntries];
+    const responsesAtStart = previousState.responses;
+    const toolCallsAtStart = previousState.toolCalls;
     const options = extractionOptions(ctx, messages);
     extractionInFlight = (async () => {
       await runExtract(options);
+      // Keep events that arrived while the headless reviewer was running.
+      // They belong after this checkpoint and must not be silently reset.
       reviewState.reviewedThrough = checkpoint;
-      reviewState.responses = 0;
-      reviewState.toolCalls = 0;
+      reviewState.responses = Math.max(0, reviewState.responses - responsesAtStart);
+      reviewState.toolCalls = Math.max(0, reviewState.toolCalls - toolCallsAtStart);
       reviewStore.reviewedEntries.push(...entryIds);
       reviewStore.reviewedEntries = [...new Set(reviewStore.reviewedEntries)].slice(-5_000);
       await queuePersist();
     })()
       .catch(() => {
-        reviewState = previousState;
+        // A failed review remains retryable, but preserve counters recorded
+        // while it was in flight.
+        const responses = reviewState.responses;
+        const toolCalls = reviewState.toolCalls;
+        reviewState = {
+          ...previousState,
+          responses: Math.max(previousState.responses, responses),
+          toolCalls: Math.max(previousState.toolCalls, toolCalls),
+          updatedAt: new Date().toISOString(),
+        };
         reviewStore.reviewedEntries = previousReviewedEntries;
       })
       .finally(async () => {
@@ -209,13 +222,26 @@ export default function memoryExtension(pi: ExtensionAPI) {
     await queuePersist();
   });
 
-  pi.on("agent_end", async (_event, ctx) => {
+  const triggerAtThreshold = (ctx: ExtensionContext) => {
     if (!config?.enabled) return;
     if (shouldReview(reviewState, "responses", config.extractMemories)) {
       void triggerExtraction("responses", ctx);
     } else if (shouldReview(reviewState, "tools", config.extractMemories)) {
       void triggerExtraction("tools", ctx);
     }
+  };
+
+  // agent_end is too late for a long tool-heavy run: it fires only after the
+  // entire run settles. turn_end fires after each assistant/tool turn, once
+  // that turn's messages have been persisted, so threshold reviews can start
+  // while the workflow continues.
+  pi.on("turn_end", (_event, ctx) => {
+    triggerAtThreshold(ctx);
+  });
+
+  // Keep this as a fallback for runtimes that do not emit turn_end reliably.
+  pi.on("agent_end", (_event, ctx) => {
+    triggerAtThreshold(ctx);
   });
 
   pi.on("session_before_compact", async (event, ctx) => {
