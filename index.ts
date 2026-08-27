@@ -88,7 +88,12 @@ export default function memoryExtension(pi: ExtensionAPI) {
     };
   };
 
-  const triggerExtraction = async (trigger: ReviewTrigger, ctx: ExtensionContext, branchOverride?: any[]): Promise<void> => {
+  const triggerExtraction = async (
+    trigger: ReviewTrigger,
+    ctx: ExtensionContext,
+    branchOverride?: any[],
+    waitForCompletion = false,
+  ): Promise<void> => {
     if (!config?.enabled || !config.extractMemories.enabled || !memoryDir) return;
     if (!shouldReview(reviewState, trigger, config.extractMemories)) return;
     if (extractionInFlight) {
@@ -148,7 +153,43 @@ export default function memoryExtension(pi: ExtensionAPI) {
           await triggerExtraction(next, ctx);
         }
       });
-    if (trigger === "shutdown") await extractionInFlight;
+    if (trigger === "shutdown" || waitForCompletion) await extractionInFlight;
+  };
+
+  const recoverPendingSessionReviews = async (ctx: ExtensionContext): Promise<void> => {
+    if (!config?.enabled || !config.extractMemories.enabled) return;
+    const sessions = await SessionManager.list(ctx.cwd).catch(() => []);
+    const pending = sessions
+      .filter((session) => {
+        if (session.id === sessionId) return false;
+        const state = reviewStore.sessions[session.id];
+        return state && (
+          shouldReview(state, "responses", config!.extractMemories) ||
+          shouldReview(state, "tools", config!.extractMemories)
+        );
+      })
+      .sort((left, right) => left.modified.getTime() - right.modified.getTime());
+
+    const activeSessionId = sessionId;
+    const activeState = reviewState;
+    for (const session of pending) {
+      const stored = reviewStore.sessions[session.id];
+      if (!stored) continue;
+      let branch: any[];
+      try {
+        branch = SessionManager.open(session.path).getBranch() as any[];
+      } catch {
+        continue;
+      }
+      sessionId = session.id;
+      reviewState = { ...stored };
+      try {
+        await triggerExtraction("compaction", ctx, branch, true);
+      } finally {
+        sessionId = activeSessionId;
+        reviewState = activeState;
+      }
+    }
   };
 
   pi.on("session_start", async (_event, ctx) => {
@@ -169,6 +210,19 @@ export default function memoryExtension(pi: ExtensionAPI) {
       await queuePersist();
     }
 
+    // Recover a threshold-sized review before offering /dream. A previous Pi
+    // process may have been terminated before session_shutdown, leaving the
+    // conversation pending even though a new session is now starting.
+    const pendingThresholdReview = config.enabled && config.extractMemories.enabled && (
+      shouldReview(reviewState, "responses", config.extractMemories) ||
+      shouldReview(reviewState, "tools", config.extractMemories)
+    );
+    if (pendingThresholdReview) {
+      await triggerExtraction("compaction", ctx, undefined, true);
+    }
+    await recoverPendingSessionReviews(ctx);
+    indexSnapshot = await loadIndexSnapshot(memoryDir, config.memIndexMaxLines, config.memIndexMaxBytes);
+
     if (!toolRegistered) {
       pi.registerTool(createMemoryTool({
         getMemoryDir: () => memoryDir,
@@ -184,6 +238,11 @@ export default function memoryExtension(pi: ExtensionAPI) {
     }
 
     if (config.enabled && ctx.hasUI) {
+      // Do not offer consolidation for an empty namespace. Extraction must run
+      // first; /dream only consolidates Markdown that already exists.
+      const topicFiles = (await readdir(memoryDir).catch(() => []))
+        .filter((file) => file.endsWith(".md") && file !== "MEMORY.md");
+      if (topicFiles.length === 0) return;
       const status = await shouldNudge(memoryDir, config, ctx.cwd);
       if (status.nudge && await ctx.ui.confirm("Memory Consolidation", `${status.message}\n\nConsolidate memory files now?`)) {
         ctx.ui.setStatus("dream", "Consolidating memory…");

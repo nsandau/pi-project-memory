@@ -99,6 +99,16 @@ describe("extension cadence wiring", () => {
     expect(result.message).toBeUndefined();
   });
 
+  it("recovers a pending threshold review before startup consolidation", async () => {
+    const pending = Array.from({ length: 10 }, (_, index) => ({
+      id: `assistant-${index}`,
+      type: "message",
+      message: { role: "assistant", content: `durable decision ${index}` },
+    }));
+    await start("startup", pending);
+    expect(runExtractMock).toHaveBeenCalledTimes(1);
+  });
+
   it("runs extraction at 10 assistant responses before the agent run settles", async () => {
     const runtime = await start("responses", branch);
     // New sessions reconstruct one existing assistant response; add nine more.
