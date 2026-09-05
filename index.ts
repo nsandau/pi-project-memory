@@ -237,7 +237,10 @@ export default function memoryExtension(pi: ExtensionAPI) {
       toolRegistered = true;
     }
 
-    if (config.enabled && ctx.hasUI) {
+    // RPC clients such as Paseo can render dialogs, but must first receive a
+    // ready session. A startup confirmation blocks session import/resume.
+    // Keep the optional consolidation nudge for interactive terminal Pi only.
+    if (config.enabled && ctx.mode === "tui") {
       // Do not offer consolidation for an empty namespace. Extraction must run
       // first; /dream only consolidates Markdown that already exists.
       const topicFiles = (await readdir(memoryDir).catch(() => []))
