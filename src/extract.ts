@@ -12,6 +12,7 @@ export interface RunExtractOpts {
   messages: ExtractMessage[];
   maxContextTokens: number;
   maxMemories: number;
+  maxEntryChars?: number;
   modelRegistry: ModelRegistry;
   parentModel?: Model<any>;
   sessionPersistence?: SessionPersistenceConfig;
@@ -23,6 +24,7 @@ export function buildExtractTask(
   messages: ExtractMessage[],
   maxTokens: number,
   maxMemories = 5,
+  maxEntryChars = 600,
 ): string {
   const maxChars = Math.max(1_000, maxTokens * 4);
   const transcript = messages
@@ -52,7 +54,7 @@ export function buildExtractTask(
     "- easily rediscoverable code facts, speculative conclusions, or duplicate information",
     "- generic advice without project-specific future value",
     "",
-    "Write one clear point per entry. Prefer what + why + context over a bare fact. Topic descriptions say what can be found there; they do not summarize every entry.",
+    `Write one clear, atomic point per entry, at most ${maxEntryChars} characters. Split independent facts rather than writing a summary. Prefer what + why + context over a bare fact. Topic descriptions say what can be found there; they do not summarize every entry.`,
     "Do not use bash, write, or edit. Use only read, ls, memory_search, and memory_add.",
     "",
     "=== Unreviewed conversation ===",
@@ -64,7 +66,7 @@ export function buildExtractTask(
 export async function runExtract(options: RunExtractOpts): Promise<void> {
   if (options.messages.length === 0) return;
   await runHeadlessAgent({
-    task: buildExtractTask(options.memoryDir, options.messages, options.maxContextTokens, options.maxMemories),
+    task: buildExtractTask(options.memoryDir, options.messages, options.maxContextTokens, options.maxMemories, options.maxEntryChars),
     cwd: options.memoryDir,
     modelRegistry: options.modelRegistry,
     model: options.model,

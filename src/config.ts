@@ -35,6 +35,11 @@ export interface MemoryConfig {
     maxResults: number;
     maxBytes: number;
   };
+  topic: {
+    maxEntryChars: number;
+    maxEntries: number;
+    maxBytes: number;
+  };
   dream: TaskDefaultsConfig & {
     nudgeAfterSessions: number;
     nudgeAfterHours: number;
@@ -50,6 +55,8 @@ export const DEFAULT_CONFIG: MemoryConfig = {
   memIndexMaxLines: 50,
   memIndexMaxBytes: 8 * 1024,
   search: { maxResults: 12, maxBytes: 16 * 1024 },
+  // A topic is small enough to load in full when its index entry is relevant.
+  topic: { maxEntryChars: 600, maxEntries: 12, maxBytes: 7_200 },
   dream: { nudgeAfterSessions: 5, nudgeAfterHours: 24, thinkLevel: "high" },
   sessionSearch: { maxSessions: 10, maxMatches: 5 },
   extractMemories: {

@@ -7,11 +7,20 @@ import type { SessionPersistenceConfig, ThinkLevel } from "./config";
 import { checkCapacity, parseIndex } from "./index-file";
 import { safeTopicPath } from "./paths";
 
-export function buildDreamTask(memoryDir: string, maxLines: number, maxBytes = 8 * 1024): string {
+export function buildDreamTask(memoryDir: string, maxLines: number, maxBytes = 8 * 1024, topics?: string[]): string {
+  const topicScope = topics?.length
+    ? `Consolidate only these topic files: ${topics.join(", ")}. Do not modify any other topic file or MEMORY.md.`
+    : "List the Markdown files, read MEMORY.md, then read every topic file.";
+  const indexInstruction = topics?.length
+    ? "Do not modify MEMORY.md during a targeted consolidation."
+    : `Regenerate MEMORY.md:
+- Exactly one concise line per topic: - [Name](stable-filename.md) — what can be found there
+- No detailed memories or per-entry list belongs in MEMORY.md.
+- Keep it at most ${maxLines} topic lines and ${maxBytes} bytes.`;
   return `You are a precision-focused memory consolidation agent. Work only in ${memoryDir}.
 
 Orient:
-- List the Markdown files, read MEMORY.md, then read every topic file.
+- ${topicScope}
 
 Consolidate for precision, not accumulation:
 - Merge duplicate or overlapping entries while preserving useful rationale and provenance.
@@ -22,19 +31,18 @@ Consolidate for precision, not accumulation:
 - Keep durable decisions, conventions, corrections, pitfalls, failed approaches and why, provenance, and reproducibility-critical details.
 - Remove routine edits, temporary state, verbose summaries, rediscoverable facts, and speculation.
 
-Regenerate MEMORY.md:
-- Exactly one concise line per topic: - [Name](stable-filename.md) — what can be found there
-- No detailed memories or per-entry list belongs in MEMORY.md.
-- Keep it at most ${maxLines} topic lines and ${maxBytes} bytes.
+${indexInstruction}
 - Keep topic fragmentation low.
 
 Use memory_file_write, memory_file_rename, and memory_file_delete for mutations. They are restricted to this project memory directory. Do not use bash. When finished, report a concise change summary.`;
 }
 
-function dreamTools(memoryDir: string, maxLines: number, maxBytes: number): ToolDefinition[] {
+function dreamTools(memoryDir: string, maxLines: number, maxBytes: number, topics?: string[]): ToolDefinition[] {
+  const allowedTopics = topics ? new Set(topics) : null;
   const resolveMarkdown = (filename: string, allowIndex = true) => {
     if (!filename.endsWith(".md")) throw new Error("Only Markdown files are allowed");
     if (!allowIndex && filename === "MEMORY.md") throw new Error("This operation is not allowed for MEMORY.md");
+    if (allowedTopics && !allowedTopics.has(filename)) throw new Error(`Targeted consolidation may modify only: ${topics!.join(", ")}`);
     return safeTopicPath(memoryDir, filename);
   };
   return [
@@ -82,6 +90,8 @@ function dreamTools(memoryDir: string, maxLines: number, maxBytes: number): Tool
 }
 
 export interface RunDreamOpts {
+  /** When supplied, compact only these topic files; used for automatic budget enforcement. */
+  topics?: string[];
   model?: string;
   thinkLevel: ThinkLevel;
   memoryDir: string;
@@ -94,7 +104,7 @@ export interface RunDreamOpts {
 
 export async function runDream(options: RunDreamOpts): Promise<string> {
   return runHeadlessAgent({
-    task: buildDreamTask(options.memoryDir, options.maxLines, options.maxBytes),
+    task: buildDreamTask(options.memoryDir, options.maxLines, options.maxBytes, options.topics),
     cwd: options.memoryDir,
     modelRegistry: options.modelRegistry,
     model: options.model,
@@ -104,7 +114,7 @@ export async function runDream(options: RunDreamOpts): Promise<string> {
     // Include custom mutation tools in the allowlist; passing customTools alone
     // does not make them active in a headless session.
     tools: ["read", "ls", "memory_file_write", "memory_file_rename", "memory_file_delete"],
-    customTools: dreamTools(options.memoryDir, options.maxLines, options.maxBytes),
+    customTools: dreamTools(options.memoryDir, options.maxLines, options.maxBytes, options.topics),
     sessionPersistence: options.sessionPersistence,
   });
 }

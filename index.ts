@@ -7,7 +7,7 @@ import { runDream } from "./src/dream";
 import { runExtract } from "./src/extract";
 import { buildInjection, loadIndexSnapshot } from "./src/inject";
 import { createMemoryTool, createMemoryTools } from "./src/memory-tool";
-import { readDreamMeta, shouldNudge, writeDreamMeta } from "./src/nudge";
+import { readDreamMeta, writeDreamMeta } from "./src/nudge";
 import { resolveMemoryDir } from "./src/paths";
 import {
   emptySessionReviewState,
@@ -57,6 +57,7 @@ export default function memoryExtension(pi: ExtensionAPI) {
   let extractionInFlight: Promise<void> | null = null;
   let pendingTrigger: ReviewTrigger | null = null;
   let shuttingDown = false;
+  const consolidatingTopics = new Set<string>();
 
   const queuePersist = () => {
     if (!memoryDir || !sessionId) return persistChain;
@@ -76,6 +77,7 @@ export default function memoryExtension(pi: ExtensionAPI) {
       messages,
       maxContextTokens: config.extractMemories.maxContextTokens,
       maxMemories: config.extractMemories.maxMemories,
+      maxEntryChars: config.topic?.maxEntryChars ?? 600,
       modelRegistry: ctx.modelRegistry,
       parentModel: ctx.model,
       customTools: createMemoryTools(memoryDir, {
@@ -83,6 +85,9 @@ export default function memoryExtension(pi: ExtensionAPI) {
         maxBytes: config.memIndexMaxBytes,
         searchMaxResults: config.search.maxResults,
         searchMaxBytes: config.search.maxBytes,
+        maxEntryChars: config.topic?.maxEntryChars ?? 600,
+        maxEntries: config.topic?.maxEntries ?? 12,
+        maxTopicBytes: config.topic?.maxBytes ?? 7_200,
       }),
       sessionPersistence: resolveTaskDefault(config, "extractMemories", "sessionPersistence") as SessionPersistenceConfig | undefined,
     };
@@ -231,40 +236,15 @@ export default function memoryExtension(pi: ExtensionAPI) {
           return config;
         },
         getEnabled: () => config?.enabled ?? false,
+        onMemoryMutation: async () => {
+          if (config && memoryDir) indexSnapshot = await loadIndexSnapshot(memoryDir, config.memIndexMaxLines, config.memIndexMaxBytes);
+        },
         searchSessions,
         cwd: () => ctx.cwd,
       }) as any);
       toolRegistered = true;
     }
 
-    // RPC clients such as Paseo can render dialogs, but must first receive a
-    // ready session. A startup confirmation blocks session import/resume.
-    // Keep the optional consolidation nudge for interactive terminal Pi only.
-    if (config.enabled && ctx.mode === "tui") {
-      // Do not offer consolidation for an empty namespace. Extraction must run
-      // first; /dream only consolidates Markdown that already exists.
-      const topicFiles = (await readdir(memoryDir).catch(() => []))
-        .filter((file) => file.endsWith(".md") && file !== "MEMORY.md");
-      if (topicFiles.length === 0) return;
-      const status = await shouldNudge(memoryDir, config, ctx.cwd);
-      if (status.nudge && await ctx.ui.confirm("Memory Consolidation", `${status.message}\n\nConsolidate memory files now?`)) {
-        ctx.ui.setStatus("dream", "Consolidating memory…");
-        void runDream({
-          model: resolveTaskDefault(config, "dream", "model") as string | undefined,
-          thinkLevel: config.dream.thinkLevel,
-          memoryDir,
-          maxLines: config.memIndexMaxLines,
-          maxBytes: config.memIndexMaxBytes,
-          modelRegistry: ctx.modelRegistry,
-          parentModel: ctx.model,
-          sessionPersistence: resolveTaskDefault(config, "dream", "sessionPersistence") as SessionPersistenceConfig | undefined,
-        }).then(async (summary) => {
-          await writeDreamMeta(memoryDir!, status.sessions);
-          ctx.ui.notify(summary, "info");
-        }).catch((error) => ctx.ui.notify(`Dream failed: ${error instanceof Error ? error.message : String(error)}`, "error"))
-          .finally(() => ctx.ui.setStatus("dream", undefined));
-      }
-    }
   });
 
   pi.on("before_agent_start", (event) => {
@@ -282,6 +262,32 @@ export default function memoryExtension(pi: ExtensionAPI) {
     if (!config?.enabled) return;
     reviewState.toolCalls++;
     await queuePersist();
+  });
+
+  pi.on("tool_result", async (event, ctx) => {
+    // A topic remains safe to load in full only while it fits its small budget.
+    // Consolidate the just-written topic silently; global /dream stays explicit.
+    const details = event.details as { overBudget?: boolean; topic?: string } | undefined;
+    const topic = event.toolName === "memory" && event.input?.action === "add" && details?.overBudget
+      ? details.topic
+      : undefined;
+    if (!topic || !config || !memoryDir || consolidatingTopics.has(topic)) return;
+    consolidatingTopics.add(topic);
+    const currentConfig = config;
+    const currentDir = memoryDir;
+    void runDream({
+      topics: [topic],
+      model: resolveTaskDefault(currentConfig, "dream", "model") as string | undefined,
+      thinkLevel: currentConfig.dream.thinkLevel,
+      memoryDir: currentDir,
+      maxLines: currentConfig.memIndexMaxLines,
+      maxBytes: currentConfig.memIndexMaxBytes,
+      modelRegistry: ctx.modelRegistry,
+      parentModel: ctx.model,
+      sessionPersistence: resolveTaskDefault(currentConfig, "dream", "sessionPersistence") as SessionPersistenceConfig | undefined,
+    }).then(async () => {
+      indexSnapshot = await loadIndexSnapshot(currentDir, currentConfig.memIndexMaxLines, currentConfig.memIndexMaxBytes);
+    }).catch(() => {}).finally(() => consolidatingTopics.delete(topic));
   });
 
   const triggerAtThreshold = (ctx: ExtensionContext) => {

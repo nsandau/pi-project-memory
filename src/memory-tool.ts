@@ -40,10 +40,13 @@ export interface AddParams {
   type?: string;
   maxLines: number;
   maxBytes: number;
+  maxEntryChars?: number;
+  maxEntries?: number;
+  maxTopicBytes?: number;
 }
 
 export interface RemoveParams { entry: string }
-export interface ActionResult { ok: boolean; error?: string; entries?: IndexEntry[] }
+export interface ActionResult { ok: boolean; error?: string; entries?: IndexEntry[]; topic?: string; overBudget?: boolean }
 export interface SearchOptions { maxResults?: number; maxBytes?: number }
 
 function today(): string {
@@ -71,9 +74,18 @@ async function readIndex(memoryDir: string): Promise<IndexEntry[]> {
   }
 }
 
+function topicOverBudget(content: string, params: AddParams): boolean {
+  const entries = parseEntryBlocks(content).length;
+  return (params.maxEntries != null && entries > params.maxEntries)
+    || (params.maxTopicBytes != null && Buffer.byteLength(content, "utf8") > params.maxTopicBytes);
+}
+
 export async function doAdd(memoryDir: string, params: AddParams): Promise<ActionResult> {
   if (!params.title?.trim()) return { ok: false, error: "title is required" };
   if (!params.content?.trim()) return { ok: false, error: "content is required" };
+  if (params.maxEntryChars && params.content.trim().length > params.maxEntryChars) {
+    return { ok: false, error: `content exceeds the ${params.maxEntryChars}-character entry limit; split it into separate durable memories` };
+  }
   const topic = params.topic.endsWith(".md") ? params.topic : `${params.topic}.md`;
   let topicPath: string;
   try {
@@ -99,7 +111,8 @@ export async function doAdd(memoryDir: string, params: AddParams): Promise<Actio
         return { ok: false, error: `MEMORY.md capacity exceeded (max ${params.maxLines} topic lines / ${params.maxBytes} bytes)` };
       }
       const frontmatter = buildFrontmatter({ name, description, updated: today() });
-      await writeFile(topicPath, appendContent(frontmatter, title, params.content), "utf8");
+      const topicContent = appendContent(frontmatter, title, params.content);
+      await writeFile(topicPath, topicContent, "utf8");
     } else {
       const raw = await readFile(topicPath, "utf8").catch(() => "");
       if (!raw) return { ok: false, error: `Topic file "${topic}" is indexed but missing` };
@@ -114,7 +127,8 @@ export async function doAdd(memoryDir: string, params: AddParams): Promise<Actio
     }
 
     await writeFile(join(memoryDir, MEMORY_MD), `${serializeIndex(next)}\n`, "utf8");
-    return { ok: true, entries: next };
+    const topicContent = await readFile(topicPath, "utf8");
+    return { ok: true, entries: next, topic, overBudget: topicOverBudget(topicContent, params) };
   });
 }
 
@@ -207,6 +221,17 @@ function runRipgrep(memoryDir: string, pattern: string): Promise<RgMatch[]> {
   });
 }
 
+export async function readTopic(memoryDir: string, topic: string, maxBytes: number): Promise<string> {
+  const indexed = await readIndex(memoryDir);
+  const entry = findEntryByTopic(indexed, topic);
+  if (!entry) throw new Error(`Topic "${topic}" is not in MEMORY.md`);
+  const content = await readFile(safeTopicPath(memoryDir, topic), "utf8");
+  if (Buffer.byteLength(content, "utf8") > maxBytes) {
+    throw new Error(`Topic "${topic}" exceeds its ${maxBytes}-byte read budget and needs consolidation`);
+  }
+  return `### ${topic}\n\n${content.trim()}`;
+}
+
 export async function searchMemory(memoryDir: string, query: string, options: SearchOptions = {}): Promise<string> {
   const maxResults = Math.max(1, Math.min(100, options.maxResults ?? DEFAULT_SEARCH_RESULTS));
   const maxBytes = Math.max(512, Math.min(50 * 1024, options.maxBytes ?? DEFAULT_SEARCH_BYTES));
@@ -258,6 +283,7 @@ interface MemoryToolConfig {
   memIndexMaxLines: number;
   memIndexMaxBytes: number;
   search: { maxResults: number; maxBytes: number };
+  topic: { maxEntryChars: number; maxEntries: number; maxBytes: number };
   sessionSearch: { maxSessions: number; maxMatches: number };
 }
 
@@ -265,24 +291,25 @@ export interface MemoryToolDeps {
   getMemoryDir: () => string | null;
   getConfig: () => MemoryToolConfig;
   getEnabled: () => boolean;
+  onMemoryMutation?: () => Promise<void>;
   searchSessions: (cwd: string, query: string, config: { maxSessions: number; maxMatches: number }) => Promise<string>;
   cwd: () => string;
 }
 
-export function createMemoryTools(memoryDir: string, config: { maxLines: number; maxBytes: number; searchMaxResults?: number; searchMaxBytes?: number }): ToolDefinition[] {
+export function createMemoryTools(memoryDir: string, config: { maxLines: number; maxBytes: number; searchMaxResults?: number; searchMaxBytes?: number; maxEntryChars?: number; maxEntries?: number; maxTopicBytes?: number }): ToolDefinition[] {
   return [
     {
       name: "memory_add",
       label: "Memory Add",
       description: "Add one durable memory to an existing topic when possible, or create a stable descriptive topic only when needed.",
       parameters: Type.Object({
-        content: Type.String({ description: "Durable knowledge with what, why, and relevant context." }),
+        content: Type.String({ maxLength: config.maxEntryChars ?? 600, description: `One atomic durable memory (max ${config.maxEntryChars ?? 600} characters): what, why, and relevant context.` }),
         topic: Type.String({ description: "Stable topic filename such as model-validation.md." }),
         title: Type.String({ description: "Concise, self-contained entry title." }),
         topicDescription: Type.Optional(Type.String({ description: "One-line description of what belongs in this topic. Required when creating a good new topic." })),
       }),
       async execute(_id, params: any) {
-        const result = await doAdd(memoryDir, { ...params, maxLines: config.maxLines, maxBytes: config.maxBytes });
+        const result = await doAdd(memoryDir, { ...params, maxLines: config.maxLines, maxBytes: config.maxBytes, maxEntryChars: config.maxEntryChars, maxEntries: config.maxEntries, maxTopicBytes: config.maxTopicBytes });
         if (!result.ok) throw new Error(result.error);
         return { details: {}, content: [{ type: "text", text: `Added "${params.title}" to ${params.topic}.` }] };
       },
@@ -305,14 +332,14 @@ export function createMemoryTool(deps: MemoryToolDeps) {
     name: "memory",
     label: "Memory",
     description: "Manage high-precision durable memory for only the current project. Add/remove entries, search topic files with ripgrep, or search Pi session history. MEMORY.md is only a compact topic index; detailed knowledge belongs in topic files.",
-    promptSnippet: "Manage and search durable current-project memory (add/remove/search).",
+    promptSnippet: "Read a relevant compact memory topic, or add/remove/search durable current-project memory.",
     promptGuidelines: [
-      "Use memory action='search' when historical project decisions, conventions, pitfalls, rationale, or corrections may matter; reformulate with synonyms or related identifiers if the first search misses.",
+      "When historical project decisions, conventions, pitfalls, rationale, or corrections may matter, choose a relevant topic from Project Memory Index and use memory action='read_topic' before answering. Use memory action='search' only if no topic clearly fits.",
       "Before memory action='add', inspect MEMORY.md and search memory; prefer an existing topic and create a new stable topic only when none fits.",
-      "Store only durable, non-obvious knowledge with what + why + context; do not store routine edits, temporary state, summaries, speculation, duplicates, or easily rediscoverable code facts.",
+      "Store only durable, non-obvious knowledge with what + why + context; each memory entry must be one short atomic point, never a session summary.",
     ],
     parameters: Type.Object({
-      action: StringEnum(["add", "remove", "search"] as const),
+      action: StringEnum(["add", "remove", "search", "read_topic"] as const),
       content: Type.Optional(Type.String()),
       topic: Type.Optional(Type.String()),
       title: Type.Optional(Type.String()),
@@ -320,6 +347,7 @@ export function createMemoryTool(deps: MemoryToolDeps) {
       entry: Type.Optional(Type.String()),
       query: Type.Optional(Type.String()),
       scope: Type.Optional(StringEnum(["memory", "sessions"] as const)),
+      readTopic: Type.Optional(Type.String({ description: "Exact topic filename from Project Memory Index, for example deployment.md." })),
     }),
     renderCall(args: any, theme: any) {
       let text = theme.fg("toolTitle", theme.bold("memory ")) + theme.fg("muted", args.action);
@@ -346,15 +374,25 @@ export function createMemoryTool(deps: MemoryToolDeps) {
           topicDescription: params.topicDescription,
           maxLines: config.memIndexMaxLines,
           maxBytes: config.memIndexMaxBytes,
+          maxEntryChars: config.topic.maxEntryChars,
+          maxEntries: config.topic.maxEntries,
+          maxTopicBytes: config.topic.maxBytes,
         });
         if (!result.ok) throw new Error(result.error);
-        return { content: [{ type: "text", text: `Added "${params.title}" to ${params.topic}.` }], details: { entries: result.entries?.length } };
+        await deps.onMemoryMutation?.();
+        const note = result.overBudget ? " Topic exceeds its budget and will be consolidated." : "";
+        return { content: [{ type: "text", text: `Added "${params.title}" to ${params.topic}.${note}` }], details: { entries: result.entries?.length, topic: result.topic, overBudget: result.overBudget } };
       }
       if (params.action === "remove") {
         if (!params.entry) throw new Error("entry is required for remove");
         const result = await doRemove(memoryDir, { entry: params.entry });
         if (!result.ok) throw new Error(result.error);
         return { content: [{ type: "text", text: `Removed entry "${params.entry}".` }], details: {} };
+      }
+      if (params.action === "read_topic") {
+        if (!params.readTopic) throw new Error("readTopic is required for read_topic");
+        const text = await readTopic(memoryDir, params.readTopic, config.topic.maxBytes);
+        return { content: [{ type: "text", text }], details: {} };
       }
       if (params.action === "search") {
         if (!params.query) throw new Error("query is required for search");

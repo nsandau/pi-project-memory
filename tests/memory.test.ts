@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { doAdd, searchMemory } from "../src/memory-tool";
+import { doAdd, readTopic, searchMemory } from "../src/memory-tool";
 import { projectHash, resolveMemoryDir, safeTopicPath } from "../src/paths";
 
 const dirs: string[] = [];
@@ -98,6 +98,30 @@ describe("ripgrep memory search", () => {
     expect(index).toContain("[Model Validation](model-validation.md)");
     expect(index).toContain("grouped CV, leakage controls, validation decisions");
     expect(index).not.toContain("Group by patient to prevent leakage");
+  });
+
+  it("reads a complete compact topic selected from the index", async () => {
+    await doAdd(dir, { ...limits, topic: "deployment.md", title: "Use HTTPS", content: "TLS terminates at the load balancer." });
+    const result = await readTopic(dir, "deployment.md", 7_200);
+    expect(result).toContain("## Use HTTPS");
+    await expect(readTopic(dir, "missing.md", 7_200)).rejects.toThrow(/not in MEMORY.md/);
+  });
+
+  it("rejects entries that exceed the atomic-entry limit", async () => {
+    const result = await doAdd(dir, {
+      ...limits,
+      maxEntryChars: 20,
+      topic: "decisions.md",
+      title: "Too long",
+      content: "This durable memory is deliberately too long.",
+    });
+    expect(result).toMatchObject({ ok: false, error: expect.stringMatching(/entry limit/) });
+  });
+
+  it("marks a topic for consolidation when it exceeds its entry budget", async () => {
+    await doAdd(dir, { ...limits, maxEntries: 1, topic: "decisions.md", title: "First", content: "First durable decision." });
+    const result = await doAdd(dir, { ...limits, maxEntries: 1, topic: "decisions.md", title: "Second", content: "Second durable decision." });
+    expect(result).toMatchObject({ ok: true, overBudget: true, topic: "decisions.md" });
   });
 
   it("adds to an existing topic without creating another topic or expanding its index summary", async () => {

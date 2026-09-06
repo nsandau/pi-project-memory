@@ -17,11 +17,12 @@ A project-scoped durable-memory extension for [Pi]. It adapts the filesystem arc
 - Every project gets a separate hashed namespace under `~/.pi/memory` by default.
 - `PI_MEMORY_DIR` can override that base directory for project-local launcher setups.
 - Session startup injects only `MEMORY.md` (up to 50 topic lines / 8 KB).
-- Detailed recall is explicit through `memory(action="search")` and `rg --json`.
+- When a topic is relevant, the agent explicitly loads its complete, budgeted file with `memory(action="read_topic")`; `rg` search is a fallback.
 - Search prefers Pi's managed binary at `<Pi agent dir>/bin/rg` (the same location Pi's built-in grep uses), then falls back to `rg` on `PATH`.
 - Automatic extraction reviews only unreviewed conversation at 10 assistant responses, 30 tool calls, before compaction, or shutdown with at least 4 responses.
 - Each review stores 0–5 durable memories; zero is intentionally common.
-- `/dream` deduplicates, prunes, merges, and reindexes memory for precision.
+- Entries are capped at 600 characters; topics are capped at 12 entries / 7.2 KB so they stay safe to load in full. Over-budget topics are silently consolidated.
+- `/dream` deduplicates, prunes, merges, and reindexes all memory on demand; it never prompts at startup.
 
 There are no daily logs, scratchpads, embeddings, vector databases, global memory, or per-prompt retrieval calls.
 
@@ -52,6 +53,7 @@ pi -e ./index.ts
 
 - `action="add"`: add one durable entry to an existing/adaptive topic
 - `action="remove"`: remove an entry by exact title
+- `action="read_topic", readTopic="topic.md"`: load a complete indexed topic file
 - `action="search", scope="memory"`: current-project `rg` search returning complete entry blocks
 - `action="search", scope="sessions"`: search Pi session history for the current project
 
@@ -77,6 +79,7 @@ Configuration files:
   "memIndexMaxLines": 50,
   "memIndexMaxBytes": 8192,
   "search": { "maxResults": 12, "maxBytes": 16384 },
+  "topic": { "maxEntryChars": 600, "maxEntries": 12, "maxBytes": 7200 },
   "extractMemories": {
     "enabled": true,
     "responseThreshold": 10,
