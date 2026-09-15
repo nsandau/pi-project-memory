@@ -116,10 +116,12 @@ export async function runHeadlessAgent(opts: HeadlessAgentOpts): Promise<string>
 		if (opts.timeoutMs != null) {
 			let timeoutId: ReturnType<typeof setTimeout> | undefined;
 			const timeoutPromise = new Promise<never>((_, reject) => {
-				timeoutId = setTimeout(
-					() => reject(new Error(`headless agent timed out after ${opts.timeoutMs}ms`)),
-					opts.timeoutMs,
-				);
+				timeoutId = setTimeout(() => {
+					// Rejecting the race alone leaves the underlying agent loop alive;
+					// abort it before disposal so shutdown cannot retain a live request.
+					void session?.abort();
+					reject(new Error(`headless agent timed out after ${opts.timeoutMs}ms`));
+				}, opts.timeoutMs);
 			});
 			await Promise.race([promptPromise, timeoutPromise]).finally(() => {
 				if (timeoutId) clearTimeout(timeoutId);

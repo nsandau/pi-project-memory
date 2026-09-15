@@ -57,6 +57,7 @@ export const DEFAULT_CONFIG: MemoryConfig = {
   search: { maxResults: 12, maxBytes: 16 * 1024 },
   // A topic is small enough to load in full when its index entry is relevant.
   topic: { maxEntryChars: 600, maxEntries: 12, maxBytes: 7_200 },
+  defaults: { model: "gpt-5.6-luna" },
   dream: { nudgeAfterSessions: 5, nudgeAfterHours: 24, thinkLevel: "high" },
   sessionSearch: { maxSessions: 10, maxMatches: 5 },
   extractMemories: {

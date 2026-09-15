@@ -80,17 +80,37 @@ Configuration files:
   "memIndexMaxBytes": 8192,
   "search": { "maxResults": 12, "maxBytes": 16384 },
   "topic": { "maxEntryChars": 600, "maxEntries": 12, "maxBytes": 7200 },
+  "defaults": {
+    "model": "gpt-5.6-luna"
+  },
   "extractMemories": {
     "enabled": true,
+    "model": "gpt-5.6-luna",
     "responseThreshold": 10,
     "toolCallThreshold": 30,
     "shutdownResponseThreshold": 4,
     "maxMemories": 5,
     "maxContextTokens": 12000,
-    "thinkLevel": "high"
+    "thinkLevel": "low"
+  },
+  "dream": {
+    "model": "gpt-5.6-luna",
+    "nudgeAfterSessions": 5,
+    "nudgeAfterHours": 24,
+    "thinkLevel": "low"
   }
 }
 ```
+
+Background memory work has independent model settings. The built-in default is `gpt-5.6-luna`:
+
+- `defaults.model` — fallback model for all memory tasks
+- `extractMemories.model` — conversation extraction, including shutdown reviews
+- `dream.model` — explicit `/dream` and automatic over-budget topic consolidation
+
+Use a fully qualified `provider/model-id` (or a fuzzy model name). If the configured model is unavailable, the extension falls back to Pi's current model. Configure the task-specific model explicitly when avoiding an expensive parent model matters. A lower `thinkLevel` is also appropriate for these tasks.
+
+Reviews do write during shutdown: when at least `shutdownResponseThreshold` unreviewed assistant responses exist, `session_shutdown` awaits extraction before Pi exits. This is intentional for durability, but closing Pi can wait for the headless model call (currently up to two minutes). If Pi is terminated forcibly, startup recovery retries pending reviews from the persisted checkpoint.
 
 ## Topic format
 
